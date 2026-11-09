@@ -17,6 +17,7 @@ from typing import Any
 
 logger = logging.getLogger("guidelens.memory")
 
+ALERT_TTL_SECONDS = float(os.getenv("CAMPUS_ALERT_TTL_HOURS", "12")) * 3600
 DB_PATH = Path(os.getenv("CAMPUS_MEMORY_DB", str(Path(__file__).with_name("campus_memory.db"))))
 
 
@@ -87,19 +88,20 @@ def get_active_alerts(location: str | None = None) -> list[dict[str, Any]]:
                 """
                 SELECT id, location, category, label, description, severity, reported_by, created_at, is_active
                 FROM campus_alerts
-                WHERE is_active = 1 AND (location LIKE ? OR location = 'All Campus')
+                WHERE is_active = 1 AND created_at > ? AND (location LIKE ? OR location = 'All Campus')
                 ORDER BY created_at DESC;
                 """,
-                (f"%{location.strip()}%",),
+                (time.time() - ALERT_TTL_SECONDS, f"%{location.strip()}%",),
             )
         else:
             cursor = conn.execute(
                 """
                 SELECT id, location, category, label, description, severity, reported_by, created_at, is_active
                 FROM campus_alerts
-                WHERE is_active = 1
+                WHERE is_active = 1 AND created_at > ?
                 ORDER BY created_at DESC;
-                """
+                """,
+                (time.time() - ALERT_TTL_SECONDS,),
             )
         rows = cursor.fetchall()
         alerts = []

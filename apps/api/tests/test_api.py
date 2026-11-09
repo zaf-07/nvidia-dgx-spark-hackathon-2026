@@ -6,6 +6,8 @@ from PIL import Image
 from fastapi.testclient import TestClient
 
 os.environ.pop("GROQ_API_KEY", None)
+os.environ.pop("VISION_API_KEY", None)
+os.environ.pop("VISION_API_URL", None)
 
 from main import app  # noqa: E402
 
@@ -105,3 +107,9 @@ def test_unisign_experimental_endpoint_fails_closed_when_disabled():
     response = client.post("/v1/unisign/interpret", json={"raw_holistic": [{}], "experimental": True})
     assert response.status_code == 503
     assert "experimental" in response.json()["detail"].lower()
+
+
+def test_healthz_alias_matches_health():
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"

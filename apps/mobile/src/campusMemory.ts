@@ -186,7 +186,7 @@ export async function getCampusAlerts(location?: string): Promise<CampusAlert[]>
     const query = location ? `?location=${encodeURIComponent(location)}` : '';
     const res = await fetch(`${apiUrl}/v1/memory/alerts${query}`, {
       signal: controller.signal,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...getSightHeaders() },
     });
     clearTimeout(timeout);
 
@@ -252,7 +252,7 @@ export async function reportCampusAlert(alert: {
       const res = await fetch(`${apiUrl}/v1/memory/observe`, {
         method: 'POST',
         signal: controller.signal,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getSightHeaders() },
         body: JSON.stringify({
           location: alert.location,
           category: alert.category,
@@ -291,7 +291,7 @@ export async function checkWhatChanged(
       const res = await fetch(`${apiUrl}/v1/memory/what-changed`, {
         method: 'POST',
         signal: controller.signal,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getSightHeaders() },
         body: JSON.stringify({
           location,
           current_objects: currentDetections.map((d) => ({
@@ -424,7 +424,7 @@ export async function sendBridgeMessage(
       const res = await fetch(`${apiUrl}/v1/bridge/message`, {
         method: 'POST',
         signal: controller.signal,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getSightHeaders() },
         body: JSON.stringify({
           session_id: sessionId,
           sender_role: senderRole,
@@ -450,7 +450,7 @@ export async function getBridgeMessages(sessionId: string): Promise<BridgeMessag
       const timeout = setTimeout(() => controller.abort(), 1500);
       const res = await fetch(`${apiUrl}/v1/bridge/messages?session_id=${encodeURIComponent(sessionId)}`, {
         signal: controller.signal,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...getSightHeaders() },
       });
       clearTimeout(timeout);
       if (res.ok) {

@@ -5,10 +5,19 @@ import uuid
 from fastapi.testclient import TestClient
 
 os.environ.pop("GROQ_API_KEY", None)
+os.environ.pop("VISION_API_KEY", None)
+os.environ.pop("VISION_API_URL", None)
 
 from main import app  # noqa: E402
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-Device-ID": "test-device", "X-Session-ID": "test-session"})
+anonymous = TestClient(app)
+
+
+def test_campus_endpoints_require_device_identity():
+    assert anonymous.get("/v1/memory/alerts").status_code == 401
+    assert anonymous.post("/v1/memory/resolve/1").status_code == 401
+    assert anonymous.get("/v1/bridge/messages?session_id=x").status_code == 401
 
 
 def test_get_campus_alerts_returns_only_real_reports():

@@ -33,3 +33,6 @@ build/
 *.mobileprovision
 android/
 ios/
+
+# Model weights are downloaded at runtime, never committed
+*.pt

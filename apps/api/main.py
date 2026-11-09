@@ -48,8 +48,34 @@ from unisign_backend import UniSignBackend, UniSignBackendError
 from yolo_sign import YoloSignDetector
 from yolo_tracker import YoloTracker
 
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
+VISION_API_URL = os.getenv("VISION_API_URL", "https://api.groq.com/openai/v1/chat/completions")
+MODEL = os.getenv("VISION_MODEL") or os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
+VISION_PROVIDER = "groq" if "api.groq.com" in VISION_API_URL else "local"
+VISION_DISABLE_THINKING = os.getenv("VISION_DISABLE_THINKING", "false").lower() in {"1", "true", "yes"}
+
+
+def _vision_api_key() -> str | None:
+    return os.getenv("VISION_API_KEY") or os.getenv("GROQ_API_KEY")
+
+
+def _vision_configured() -> bool:
+    return VISION_PROVIDER == "local" or bool(_vision_api_key())
+
+
+def _vision_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    key = _vision_api_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
+def _apply_vision_options(payload: dict) -> dict:
+    if VISION_DISABLE_THINKING:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+    return payload
+
+
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", "1500000"))
 MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "4"))
 MIN_REQUEST_INTERVAL = float(os.getenv("MIN_REQUEST_INTERVAL", "1.5"))
@@ -241,8 +267,7 @@ async def _call_groq(
     task: str,
     verified_objects: list[DetectedObject] | None = None,
 ) -> VisionResult:
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
+    if not _vision_configured():
         raise HTTPException(503, "Vision service is not configured")
     detector_context = ""
     if task == "scene" and verified_objects:
@@ -278,9 +303,9 @@ async def _call_groq(
         for attempt in range(3):
             try:
                 response = await client.post(
-                    GROQ_URL,
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json=payload,
+                    VISION_API_URL,
+                    headers=_vision_headers(),
+                    json=_apply_vision_options(payload),
                 )
                 if response.status_code == 429 or response.status_code >= 500:
                     if attempt < 2:
@@ -305,8 +330,7 @@ async def _call_groq(
 async def _call_groq_sign(
     images: list[tuple[bytes, str]], previous_transcript: str
 ) -> SignTranslation:
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
+    if not _vision_configured():
         raise HTTPException(503, "Vision service is not configured")
     content = [{
         "type": "text",
@@ -356,9 +380,9 @@ async def _call_groq_sign(
         for attempt in range(2):
             try:
                 response = await client.post(
-                    GROQ_URL,
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json=payload,
+                    VISION_API_URL,
+                    headers=_vision_headers(),
+                    json=_apply_vision_options(payload),
                 )
                 if response.status_code == 429:
                     raise HTTPException(429, "Sign translation is rate-limited by the vision provider. Try again after the reset time in your Groq console.")
@@ -409,11 +433,12 @@ async def _call_groq_sign(
 
 
 @app.get("/health")
+@app.get("/healthz")
 def health():
     return {
         "status": "ok",
-        "provider": "groq",
-        "configured": bool(os.getenv("GROQ_API_KEY")),
+        "provider": VISION_PROVIDER,
+        "configured": _vision_configured(),
         "model": MODEL,
         "yolo": {
             "enabled": YOLO_ENABLED,
@@ -493,7 +518,7 @@ async def describe(
     client_id = request.headers.get("X-Session-ID") or (request.client.host if request.client else "unknown")
     _rate_limit(client_id)
     body = await _read_tracking_image(image)
-    if not os.getenv("GROQ_API_KEY"):
+    if not _vision_configured():
         raise HTTPException(503, "Vision service is not configured")
     started = time.monotonic()
     async with _slots:
@@ -605,8 +630,9 @@ async def interpret_unisign_experimental(sequence: UniSignRawRequest):
 
 
 @app.get("/v1/memory/alerts", response_model=list[CampusAlert])
-async def get_campus_alerts(location: str | None = None):
+async def get_campus_alerts(request: Request, location: str | None = None):
     """Retrieve active campus memory alerts, shared across student devices."""
+    _authorize_sight(request)
     return [CampusAlert.model_validate(alert) for alert in campus_memory.get_active_alerts(location)]
 
 
@@ -681,7 +707,7 @@ async def shared_sight_dashboard(request: Request, zone_id: str, limit: int = 20
 @app.post("/v1/memory/observe", response_model=CampusAlert)
 async def observe_campus_hazard(request: Request, body: CampusAlertCreateRequest):
     """Record an obstacle, hazard, or room status into shared campus memory."""
-    client_id = request.headers.get("X-Session-ID") or (request.client.host if request.client else "anonymous")
+    _, client_id = _authorize_sight(request)
     alert = campus_memory.add_alert(
         location=body.location,
         category=body.category,
@@ -694,8 +720,9 @@ async def observe_campus_hazard(request: Request, body: CampusAlertCreateRequest
 
 
 @app.post("/v1/memory/resolve/{alert_id}")
-async def resolve_campus_alert(alert_id: int):
+async def resolve_campus_alert(request: Request, alert_id: int):
     """Mark a campus hazard as cleared or resolved."""
+    _authorize_sight(request)
     ok = campus_memory.resolve_alert(alert_id)
     if not ok:
         raise HTTPException(404, "Alert not found")
@@ -703,8 +730,9 @@ async def resolve_campus_alert(alert_id: int):
 
 
 @app.post("/v1/memory/what-changed", response_model=WhatChangedResponse)
-async def what_changed(body: WhatChangedRequest):
+async def what_changed(request: Request, body: WhatChangedRequest):
     """Compare current objects against baseline memory for the location."""
+    _authorize_sight(request)
     result = campus_memory.detect_what_changed(
         location=body.location,
         current_objects=body.current_objects,
@@ -714,8 +742,9 @@ async def what_changed(body: WhatChangedRequest):
 
 
 @app.post("/v1/bridge/message", response_model=BridgeMessage)
-async def post_bridge_message(body: BridgeMessageRequest):
+async def post_bridge_message(request: Request, body: BridgeMessageRequest):
     """Post a Deaf-Blind bridge message (sign translation or spoken reply)."""
+    _authorize_sight(request)
     msg = campus_memory.add_bridge_message(
         session_id=body.session_id,
         sender_role=body.sender_role,
@@ -725,8 +754,9 @@ async def post_bridge_message(body: BridgeMessageRequest):
 
 
 @app.get("/v1/bridge/messages", response_model=list[BridgeMessage])
-async def get_bridge_messages(session_id: str, limit: int = 20):
+async def get_bridge_messages(request: Request, session_id: str, limit: int = 20):
     """Get recent bridge conversation messages for a session."""
+    _authorize_sight(request)
     messages = campus_memory.get_bridge_messages(session_id=session_id, limit=limit)
     return [BridgeMessage.model_validate(m) for m in messages]
 
